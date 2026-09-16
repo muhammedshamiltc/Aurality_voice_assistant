@@ -1,7 +1,6 @@
 from pathlib import Path
 from uuid import uuid4
 import wave
-import time
 
 from google.genai import types
 
@@ -43,27 +42,24 @@ MAX_HISTORY_TURNS = 8
 def transcribe_audio(audio_path: Path) -> str:
     """Turn a recorded audio clip into text using Gemini speech-to-text."""
 
-    audio_file = client.files.upload(file=str(audio_path))
+    import mimetypes
 
-    # Wait until Gemini finishes processing the uploaded audio
-    for _ in range(30):
-        audio_file = client.files.get(name=audio_file.name)
+    audio_data = audio_path.read_bytes()
 
-        if audio_file.state.name == "ACTIVE":
-            break
+    mime_type, _ = mimetypes.guess_type(str(audio_path))
 
-        if audio_file.state.name == "FAILED":
-            raise RuntimeError("Gemini failed to process the uploaded audio.")
+    if mime_type is None:
+        mime_type = "audio/webm"
 
-        time.sleep(1)
-
-    else:
-        raise RuntimeError("Audio file was not ready in time.")
+    audio_part = types.Part.from_bytes(
+        data=audio_data,
+        mime_type=mime_type,
+    )
 
     response = client.models.generate_content(
         model=TRANSCRIPTION_MODEL,
         contents=[
-            audio_file,
+            audio_part,
             "Transcribe the speech in this audio exactly. Return only the "
             "spoken words, with no extra commentary.",
         ],
