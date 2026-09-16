@@ -329,71 +329,292 @@ function speakWithBrowser(text) {
 
 
   // ---------- Recording ----------
-  async function toggleRecording() {
-    if (state.recording) {
-      stopRecording();
-      return;
-    }
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      state.micStream = stream;
-      state.chunks = [];
-      const mimeType = MediaRecorder.isTypeSupported("audio/webm;codecs=opus")
-  ? "audio/webm;codecs=opus"
-  : "audio/webm";
+  // ---------- Recording ----------
 
-state.mediaRecorder = new MediaRecorder(stream, {
-  mimeType: mimeType
-});
-      state.mediaRecorder.ondataavailable = (e) => {
-        if (e.data.size) state.chunks.push(e.data);
-      };
-      state.mediaRecorder.onstop = onRecordingStopped;
-      state.mediaRecorder.start();
-      state.recording = true;
-      el.micBtn.classList.add("recording");
-      setStage("speech", "active");
-      setStatus("Listening… click the mic again to stop.");
-      startLiveWaveform(stream);
-    } catch (e) {
-      setStatus("Microphone access wasn't available.", true);
-    }
+async function toggleRecording() {
+  if (state.recording) {
+    stopRecording();
+    return;
   }
 
-  function stopRecording() {
-    if (state.mediaRecorder && state.mediaRecorder.state !== "inactive") {
-      state.mediaRecorder.stop();
-    }
-    state.recording = false;
-    el.micBtn.classList.remove("recording");
-    stopLiveWaveform();
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({
+      audio: true
+    });
+
+    state.micStream = stream;
+    state.chunks = [];
+
+    // Use MediaRecorder to capture audio
+    const mimeType = MediaRecorder.isTypeSupported(
+      "audio/webm;codecs=opus"
+    )
+      ? "audio/webm;codecs=opus"
+      : "audio/webm";
+
+    state.mediaRecorder = new MediaRecorder(stream, {
+      mimeType: mimeType
+    });
+
+    state.mediaRecorder.ondataavailable = (e) => {
+      if (e.data && e.data.size > 0) {
+        state.chunks.push(e.data);
+      }
+    };
+
+    state.mediaRecorder.onstop = onRecordingStopped;
+
+    // Collect data every 250ms
+    state.mediaRecorder.start(250);
+
+    state.recording = true;
+    el.micBtn.classList.add("recording");
+
+    setStage("speech", "active");
+    setStatus("Listening… click the mic again to stop.");
+
+    startLiveWaveform(stream);
+
+  } catch (e) {
+    console.error("Microphone error:", e);
+    setStatus("Microphone access wasn't available.", true);
+  }
+}
+
+
+function stopRecording() {
+  if (
+    state.mediaRecorder &&
+    state.mediaRecorder.state !== "inactive"
+  ) {
+    state.mediaRecorder.stop();
   }
 
-  async function onRecordingStopped() {
+  state.recording = false;
+  el.micBtn.classList.remove("recording");
+
+  stopLiveWaveform();
+}
+
+
+async function onRecordingStopped() {
+  if (state.micStream) {
     state.micStream.getTracks().forEach((t) => t.stop());
-    const blob = new Blob(state.chunks, {
-  type: state.mediaRecorder.mimeType
-});
+  }
+
+  try {
+    const webmBlob = new Blob(state.chunks, {
+      type: state.mediaRecorder.mimeType || "audio/webm"
+    });
+
     setStage("speech", "done");
     setStage("stt", "active");
     setStatus("Transcribing what you said…");
 
-    try {
-      const form = new FormData();
-      form.append("audio", blob, "question.webm");
-      const res = await fetch("/api/transcribe", { method: "POST", body: form });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.detail || "Couldn't transcribe that.");
+    // Convert WebM recording to WAV
+    const wavBlob = await convertToWav(webmBlob);
 
-      setStage("stt", "done");
-      addUserMessage(data.transcript);
-      await runChatAndSpeak(data.transcript);
-    } catch (err) {
-      setStatus(err.message, true);
-      setTimeout(resetPipeline, 900);
+    const form = new FormData();
+
+    form.append(
+      "audio",
+      wavBlob,
+      "question.wav"
+    );
+
+    const res = await fetch("/api/transcribe", {
+      method: "POST",
+      body: form
+    });
+
+    const data = await res.json();
+
+    if (!res.ok) {
+      throw new Error(
+        data.detail || "Couldn't transcribe that."
+      );
+    }
+
+    setStage("stt", "done");
+
+    addUserMessage(data.transcript);
+
+    await runChatAndSpeak(data.transcript);
+
+  } catch (err) {
+    console.error("Transcription error:", err);
+
+    setStatus(
+      err.message || "Couldn't transcribe that.",
+      true
+    );
+
+    setTimeout(resetPipeline, 900);
+  }
+}
+
+
+// Convert recorded WebM audio to WAV
+async function convertToWav(blob) {
+  const arrayBuffer = await blob.arrayBuffer();
+
+  const audioContext = new (
+    window.AudioContext ||
+    window.webkitAudioContext
+  )();
+
+  try {
+    const audioBuffer =
+      await audioContext.decodeAudioData(arrayBuffer);
+
+    const wavBuffer = audioBufferToWav(audioBuffer);
+
+    return new Blob(
+      [wavBuffer],
+      { type: "audio/wav" }
+    );
+
+  } finally {
+    await audioContext.close();
+  }
+}
+
+
+// Convert AudioBuffer to 16-bit PCM WAV
+function audioBufferToWav(audioBuffer) {
+  const numberOfChannels = audioBuffer.numberOfChannels;
+  const sampleRate = audioBuffer.sampleRate;
+  const format = 1;
+  const bitDepth = 16;
+
+  const channelData = [];
+
+  for (let channel = 0; channel < numberOfChannels; channel++) {
+    channelData.push(
+      audioBuffer.getChannelData(channel)
+    );
+  }
+
+  const length =
+    channelData[0].length *
+    numberOfChannels *
+    2;
+
+  const buffer =
+    new ArrayBuffer(44 + length);
+
+  const view =
+    new DataView(buffer);
+
+  writeString(view, 0, "RIFF");
+  view.setUint32(
+    4,
+    36 + length,
+    true
+  );
+
+  writeString(view, 8, "WAVE");
+  writeString(view, 12, "fmt ");
+
+  view.setUint32(
+    16,
+    16,
+    true
+  );
+
+  view.setUint16(
+    20,
+    format,
+    true
+  );
+
+  view.setUint16(
+    22,
+    numberOfChannels,
+    true
+  );
+
+  view.setUint32(
+    24,
+    sampleRate,
+    true
+  );
+
+  view.setUint32(
+    28,
+    sampleRate *
+      numberOfChannels *
+      bitDepth / 8,
+    true
+  );
+
+  view.setUint16(
+    32,
+    numberOfChannels *
+      bitDepth / 8,
+    true
+  );
+
+  view.setUint16(
+    34,
+    bitDepth,
+    true
+  );
+
+  writeString(view, 36, "data");
+
+  view.setUint32(
+    40,
+    length,
+    true
+  );
+
+  let offset = 44;
+
+  const samples =
+    channelData[0].length;
+
+  for (let i = 0; i < samples; i++) {
+
+    for (
+      let channel = 0;
+      channel < numberOfChannels;
+      channel++
+    ) {
+
+      let sample =
+        channelData[channel][i];
+
+      sample =
+        Math.max(-1, Math.min(1, sample));
+
+      const value =
+        sample < 0
+          ? sample * 0x8000
+          : sample * 0x7FFF;
+
+      view.setInt16(
+        offset,
+        value,
+        true
+      );
+
+      offset += 2;
     }
   }
 
+  return buffer;
+}
+
+
+function writeString(view, offset, string) {
+  for (let i = 0; i < string.length; i++) {
+    view.setUint8(
+      offset + i,
+      string.charCodeAt(i)
+    );
+  }
+}
   // ---------- Waveform (idle + live) ----------
   function idleWaveform() {
     let t = 0;
