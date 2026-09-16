@@ -236,50 +236,97 @@
     await runChatAndSpeak(text);
   }
 
-  async function runChatAndSpeak(text) {
-    el.sendBtn.disabled = true;
-    setStage("speech", "done");
-    setStage("stt", "done");
-    setStage("llm", "active");
-    setStatus("Thinking through a reply…");
+async function runChatAndSpeak(text) {
+  el.sendBtn.disabled = true;
+  setStage("speech", "done");
+  setStage("stt", "done");
+  setStage("llm", "active");
+  setStatus("Thinking through a reply…");
 
-    const typingNode = addTypingBubble();
+  const typingNode = addTypingBubble();
 
-    try {
-      const res = await fetch("/api/chat", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text, conversation_id: state.conversationId }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.detail || "The assistant couldn't answer that.");
+  try {
+    const res = await fetch("/api/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        text,
+        conversation_id: state.conversationId
+      }),
+    });
 
-      setStage("llm", "done");
-      fillAssistantBubble(typingNode, data.answer);
-      scrollToBottom();
+    const data = await res.json();
 
-      setStage("tts", "active");
-      setStatus("Turning that into speech…");
-
-      const speakRes = await fetch("/api/speak", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text: data.answer, voice: state.voice }),
-      });
-      const speakData = await speakRes.json();
-      if (!speakRes.ok) throw new Error(speakData.detail || "Could not generate audio.");
-
-      setStage("tts", "done");
-      addAudioRow(typingNode, speakData.audio_url);
-      setStatus("");
-    } catch (err) {
-      typingNode.remove();
-      setStatus(err.message, true);
-    } finally {
-      el.sendBtn.disabled = false;
-      setTimeout(resetPipeline, 900);
+    if (!res.ok) {
+      throw new Error(
+        data.detail || "The assistant couldn't answer that."
+      );
     }
+
+    setStage("llm", "done");
+
+    fillAssistantBubble(typingNode, data.answer);
+    scrollToBottom();
+
+    // Browser text-to-speech
+    setStage("tts", "active");
+    setStatus("Speaking the reply…");
+
+    if (state.autoplay) {
+      speakWithBrowser(data.answer);
+    }
+
+    setStage("tts", "done");
+    setStatus("");
+
+  } catch (err) {
+    typingNode.remove();
+    setStatus(err.message, true);
+  } finally {
+    el.sendBtn.disabled = false;
+    setTimeout(resetPipeline, 900);
   }
+}
+function speakWithBrowser(text) {
+  if (!("speechSynthesis" in window)) {
+    setStatus("Speech synthesis is not supported in this browser.", true);
+    return;
+  }
+
+  window.speechSynthesis.cancel();
+
+  const utterance = new SpeechSynthesisUtterance(text);
+
+  utterance.rate = 1;
+  utterance.pitch = 1;
+  utterance.volume = 1;
+
+  const voices = window.speechSynthesis.getVoices();
+
+  // Try to use an English voice
+  const englishVoice = voices.find(
+    (voice) => voice.lang && voice.lang.startsWith("en")
+  );
+
+  if (englishVoice) {
+    utterance.voice = englishVoice;
+  }
+
+  utterance.onstart = () => {
+    setStatus("Speaking…");
+  };
+
+  utterance.onend = () => {
+    setStatus("");
+  };
+
+  utterance.onerror = () => {
+    setStatus("Could not play the voice reply.", true);
+  };
+
+  window.speechSynthesis.speak(utterance);
+}
+
 
   // ---------- Recording ----------
   async function toggleRecording() {
