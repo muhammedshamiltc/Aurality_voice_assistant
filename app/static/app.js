@@ -9,10 +9,16 @@
     recording: false,
     mediaRecorder: null,
     chunks: [],
-    audioCtx: null,
-    analyser: null,
-    micStream: null,
-    rafId: null,
+   audioCtx: null,
+audioSource: null,
+audioProcessor: null,
+audioSamples: [],
+sampleRate: 44100,
+
+waveformCtx: null,
+analyser: null,
+micStream: null,
+rafId: null,
   };
 
   // ---------- Elements ----------
@@ -328,8 +334,7 @@ function speakWithBrowser(text) {
 }
 
 
-  // ---------- Recording ----------
-  // ---------- Recording ----------
+// ---------- Recording ----------
 
 async function toggleRecording() {
   if (state.recording) {
@@ -339,80 +344,175 @@ async function toggleRecording() {
 
   try {
     const stream = await navigator.mediaDevices.getUserMedia({
-      audio: true
+      audio: {
+        channelCount: 1,
+        echoCancellation: true,
+        noiseSuppression: true,
+        autoGainControl: true
+      }
     });
 
     state.micStream = stream;
     state.chunks = [];
 
-    // Use MediaRecorder to capture audio
-    const mimeType = MediaRecorder.isTypeSupported(
-      "audio/webm;codecs=opus"
-    )
-      ? "audio/webm;codecs=opus"
-      : "audio/webm";
+    // Create AudioContext for direct PCM recording
+    state.audioCtx = new (
+      window.AudioContext ||
+      window.webkitAudioContext
+    )();
 
-    state.mediaRecorder = new MediaRecorder(stream, {
-      mimeType: mimeType
-    });
+    await state.audioCtx.resume();
 
-    state.mediaRecorder.ondataavailable = (e) => {
-      if (e.data && e.data.size > 0) {
-        state.chunks.push(e.data);
-      }
+    state.sampleRate = state.audioCtx.sampleRate;
+
+    const source =
+      state.audioCtx.createMediaStreamSource(stream);
+
+    // Use ScriptProcessor to capture raw PCM audio
+    const processor =
+      state.audioCtx.createScriptProcessor(
+        4096,
+        1,
+        1
+      );
+
+    state.audioProcessor = processor;
+    state.audioSamples = [];
+
+    processor.onaudioprocess = (event) => {
+      if (!state.recording) return;
+
+      const input =
+        event.inputBuffer.getChannelData(0);
+
+      // Copy the samples
+      state.audioSamples.push(
+        new Float32Array(input)
+      );
     };
 
-    state.mediaRecorder.onstop = onRecordingStopped;
+    source.connect(processor);
 
-    // Collect data every 250ms
-    state.mediaRecorder.start(250);
+    // Connect to destination so processing continues
+    processor.connect(
+      state.audioCtx.destination
+    );
+
+    state.audioSource = source;
 
     state.recording = true;
+
     el.micBtn.classList.add("recording");
 
     setStage("speech", "active");
-    setStatus("Listening… click the mic again to stop.");
+
+    setStatus(
+      "Listening… click the mic again to stop."
+    );
 
     startLiveWaveform(stream);
 
   } catch (e) {
     console.error("Microphone error:", e);
-    setStatus("Microphone access wasn't available.", true);
+
+    setStatus(
+      "Microphone access wasn't available.",
+      true
+    );
   }
 }
 
 
 function stopRecording() {
-  if (
-    state.mediaRecorder &&
-    state.mediaRecorder.state !== "inactive"
-  ) {
-    state.mediaRecorder.stop();
-  }
+  if (!state.recording) return;
 
   state.recording = false;
+
   el.micBtn.classList.remove("recording");
 
   stopLiveWaveform();
+
+  if (state.audioProcessor) {
+    state.audioProcessor.disconnect();
+    state.audioProcessor = null;
+  }
+
+  if (state.audioSource) {
+    state.audioSource.disconnect();
+    state.audioSource = null;
+  }
+
+  if (state.micStream) {
+    state.micStream
+      .getTracks()
+      .forEach((track) => track.stop());
+  }
+
+  if (state.audioCtx) {
+    state.audioCtx.close();
+    state.audioCtx = null;
+  }
+
+  onRecordingStopped();
 }
 
 
 async function onRecordingStopped() {
-  if (state.micStream) {
-    state.micStream.getTracks().forEach((t) => t.stop());
-  }
+  setStage("speech", "done");
+  setStage("stt", "active");
+
+  setStatus(
+    "Preparing your voice recording…"
+  );
 
   try {
-    const webmBlob = new Blob(state.chunks, {
-      type: state.mediaRecorder.mimeType || "audio/webm"
-    });
+    if (
+      !state.audioSamples ||
+      state.audioSamples.length === 0
+    ) {
+      throw new Error(
+        "No audio was captured. Please try again."
+      );
+    }
 
-    setStage("speech", "done");
-    setStage("stt", "active");
-    setStatus("Transcribing what you said…");
+    // Combine all recorded samples
+    const totalLength =
+      state.audioSamples.reduce(
+        (total, chunk) =>
+          total + chunk.length,
+        0
+      );
 
-    // Convert WebM recording to WAV
-    const wavBlob = await convertToWav(webmBlob);
+    const samples =
+      new Float32Array(totalLength);
+
+    let offset = 0;
+
+    for (const chunk of state.audioSamples) {
+      samples.set(chunk, offset);
+      offset += chunk.length;
+    }
+
+    // Create WAV audio
+    const sampleRate =
+      state.sampleRate || 44100;
+
+    const wavBuffer =
+      createWavFile(
+        samples,
+        sampleRate
+      );
+
+    const wavBlob = new Blob(
+      [wavBuffer],
+      {
+        type: "audio/wav"
+      }
+    );
+
+    setStatus(
+      "Transcribing what you said…"
+    );
 
     const form = new FormData();
 
@@ -422,99 +522,95 @@ async function onRecordingStopped() {
       "question.wav"
     );
 
-    const res = await fetch("/api/transcribe", {
-      method: "POST",
-      body: form
-    });
+    const res = await fetch(
+      "/api/transcribe",
+      {
+        method: "POST",
+        body: form
+      }
+    );
 
     const data = await res.json();
 
     if (!res.ok) {
       throw new Error(
-        data.detail || "Couldn't transcribe that."
+        data.detail ||
+        "Couldn't transcribe that."
       );
     }
 
     setStage("stt", "done");
 
-    addUserMessage(data.transcript);
+    addUserMessage(
+      data.transcript
+    );
 
-    await runChatAndSpeak(data.transcript);
+    await runChatAndSpeak(
+      data.transcript
+    );
 
   } catch (err) {
-    console.error("Transcription error:", err);
+    console.error(
+      "Transcription error:",
+      err
+    );
 
     setStatus(
-      err.message || "Couldn't transcribe that.",
+      err.message ||
+      "Couldn't transcribe that.",
       true
     );
 
-    setTimeout(resetPipeline, 900);
+    setTimeout(
+      resetPipeline,
+      900
+    );
   }
 }
 
 
-// Convert recorded WebM audio to WAV
-async function convertToWav(blob) {
-  const arrayBuffer = await blob.arrayBuffer();
+// Create a standard PCM WAV file
+function createWavFile(
+  samples,
+  sampleRate
+) {
+  const numChannels = 1;
+  const bitsPerSample = 16;
 
-  const audioContext = new (
-    window.AudioContext ||
-    window.webkitAudioContext
-  )();
-
-  try {
-    const audioBuffer =
-      await audioContext.decodeAudioData(arrayBuffer);
-
-    const wavBuffer = audioBufferToWav(audioBuffer);
-
-    return new Blob(
-      [wavBuffer],
-      { type: "audio/wav" }
-    );
-
-  } finally {
-    await audioContext.close();
-  }
-}
-
-
-// Convert AudioBuffer to 16-bit PCM WAV
-function audioBufferToWav(audioBuffer) {
-  const numberOfChannels = audioBuffer.numberOfChannels;
-  const sampleRate = audioBuffer.sampleRate;
-  const format = 1;
-  const bitDepth = 16;
-
-  const channelData = [];
-
-  for (let channel = 0; channel < numberOfChannels; channel++) {
-    channelData.push(
-      audioBuffer.getChannelData(channel)
-    );
-  }
-
-  const length =
-    channelData[0].length *
-    numberOfChannels *
-    2;
+  const dataSize =
+    samples.length * 2;
 
   const buffer =
-    new ArrayBuffer(44 + length);
+    new ArrayBuffer(
+      44 + dataSize
+    );
 
   const view =
     new DataView(buffer);
 
-  writeString(view, 0, "RIFF");
+  writeString(
+    view,
+    0,
+    "RIFF"
+  );
+
   view.setUint32(
     4,
-    36 + length,
+    36 + dataSize,
     true
   );
 
-  writeString(view, 8, "WAVE");
-  writeString(view, 12, "fmt ");
+  writeString(
+    view,
+    8,
+    "WAVE"
+  );
+
+  writeString(
+    view,
+    12,
+    "fmt "
+  );
 
   view.setUint32(
     16,
@@ -524,13 +620,13 @@ function audioBufferToWav(audioBuffer) {
 
   view.setUint16(
     20,
-    format,
+    1,
     true
   );
 
   view.setUint16(
     22,
-    numberOfChannels,
+    numChannels,
     true
   );
 
@@ -543,75 +639,83 @@ function audioBufferToWav(audioBuffer) {
   view.setUint32(
     28,
     sampleRate *
-      numberOfChannels *
-      bitDepth / 8,
+      numChannels *
+      bitsPerSample / 8,
     true
   );
 
   view.setUint16(
     32,
-    numberOfChannels *
-      bitDepth / 8,
+    numChannels *
+      bitsPerSample / 8,
     true
   );
 
   view.setUint16(
     34,
-    bitDepth,
+    bitsPerSample,
     true
   );
 
-  writeString(view, 36, "data");
+  writeString(
+    view,
+    36,
+    "data"
+  );
 
   view.setUint32(
     40,
-    length,
+    dataSize,
     true
   );
 
   let offset = 44;
 
-  const samples =
-    channelData[0].length;
+  for (
+    let i = 0;
+    i < samples.length;
+    i++
+  ) {
+    let sample =
+      samples[i];
 
-  for (let i = 0; i < samples; i++) {
-
-    for (
-      let channel = 0;
-      channel < numberOfChannels;
-      channel++
-    ) {
-
-      let sample =
-        channelData[channel][i];
-
-      sample =
-        Math.max(-1, Math.min(1, sample));
-
-      const value =
-        sample < 0
-          ? sample * 0x8000
-          : sample * 0x7FFF;
-
-      view.setInt16(
-        offset,
-        value,
-        true
+    sample =
+      Math.max(
+        -1,
+        Math.min(1, sample)
       );
 
-      offset += 2;
-    }
+    const value =
+      sample < 0
+        ? sample * 0x8000
+        : sample * 0x7FFF;
+
+    view.setInt16(
+      offset,
+      value,
+      true
+    );
+
+    offset += 2;
   }
 
   return buffer;
 }
 
 
-function writeString(view, offset, string) {
-  for (let i = 0; i < string.length; i++) {
+function writeString(
+  view,
+  offset,
+  text
+) {
+  for (
+    let i = 0;
+    i < text.length;
+    i++
+  ) {
     view.setUint8(
       offset + i,
-      string.charCodeAt(i)
+      text.charCodeAt(i)
     );
   }
 }
@@ -641,36 +745,82 @@ function writeString(view, offset, string) {
     wfCtx.stroke();
   }
 
-  function startLiveWaveform(stream) {
-    state.audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-    const source = state.audioCtx.createMediaStreamSource(stream);
-    state.analyser = state.audioCtx.createAnalyser();
-    state.analyser.fftSize = 512;
-    source.connect(state.analyser);
+ function startLiveWaveform(stream) {
+  state.waveformCtx = new (
+    window.AudioContext ||
+    window.webkitAudioContext
+  )();
 
-    const bufferLength = state.analyser.frequencyBinCount;
-    const data = new Uint8Array(bufferLength);
+  const source =
+    state.waveformCtx.createMediaStreamSource(stream);
 
-    function draw() {
-      state.rafId = requestAnimationFrame(draw);
-      state.analyser.getByteTimeDomainData(data);
-      const { width, height } = el.waveform;
-      wfCtx.clearRect(0, 0, width, height);
-      wfCtx.strokeStyle = "#2FD9C4";
-      wfCtx.lineWidth = 2;
-      wfCtx.beginPath();
-      const slice = width / bufferLength;
-      let x = 0;
-      for (let i = 0; i < bufferLength; i++) {
-        const v = data[i] / 128.0;
-        const y = (v * height) / 2;
-        i === 0 ? wfCtx.moveTo(x, y) : wfCtx.lineTo(x, y);
-        x += slice;
+  state.analyser =
+    state.waveformCtx.createAnalyser();
+
+  state.analyser.fftSize = 512;
+
+  source.connect(state.analyser);
+
+  const bufferLength =
+    state.analyser.frequencyBinCount;
+
+  const data =
+    new Uint8Array(bufferLength);
+
+  function draw() {
+    state.rafId =
+      requestAnimationFrame(draw);
+
+    if (!state.analyser) return;
+
+    state.analyser.getByteTimeDomainData(data);
+
+    const {
+      width,
+      height
+    } = el.waveform;
+
+    wfCtx.clearRect(
+      0,
+      0,
+      width,
+      height
+    );
+
+    wfCtx.strokeStyle = "#2FD9C4";
+    wfCtx.lineWidth = 2;
+    wfCtx.beginPath();
+
+    const slice =
+      width / bufferLength;
+
+    let x = 0;
+
+    for (
+      let i = 0;
+      i < bufferLength;
+      i++
+    ) {
+      const v =
+        data[i] / 128.0;
+
+      const y =
+        (v * height) / 2;
+
+      if (i === 0) {
+        wfCtx.moveTo(x, y);
+      } else {
+        wfCtx.lineTo(x, y);
       }
-      wfCtx.stroke();
+
+      x += slice;
     }
-    draw();
+
+    wfCtx.stroke();
   }
+
+  draw();
+}
 
   function stopLiveWaveform() {
     if (state.rafId) cancelAnimationFrame(state.rafId);
