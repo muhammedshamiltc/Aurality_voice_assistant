@@ -338,7 +338,13 @@ function speakWithBrowser(text) {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       state.micStream = stream;
       state.chunks = [];
-      state.mediaRecorder = new MediaRecorder(stream);
+      const mimeType = MediaRecorder.isTypeSupported("audio/webm;codecs=opus")
+  ? "audio/webm;codecs=opus"
+  : "audio/webm";
+
+state.mediaRecorder = new MediaRecorder(stream, {
+  mimeType: mimeType
+});
       state.mediaRecorder.ondataavailable = (e) => {
         if (e.data.size) state.chunks.push(e.data);
       };
@@ -365,7 +371,9 @@ function speakWithBrowser(text) {
 
   async function onRecordingStopped() {
     state.micStream.getTracks().forEach((t) => t.stop());
-    const blob = new Blob(state.chunks, { type: "audio/webm" });
+    const blob = new Blob(state.chunks, {
+  type: state.mediaRecorder.mimeType
+});
     setStage("speech", "done");
     setStage("stt", "active");
     setStatus("Transcribing what you said…");
