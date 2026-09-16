@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Aurality — AI Voice Assistant</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<div class="app">
+
+  <aside class="rail">
+    <div class="brand">
+      <span class="brand-mark" aria-hidden="true"></span>
+      <div>
+        <h1>Aurality</h1>
+        <p class="brand-sub">Speech &#8646; Intelligence</p>
+      </div>
+    </div>
+
+    <canvas id="waveform" width="320" height="120" aria-hidden="true"></canvas>
+
+    <ol class="pipeline" id="pipeline">
+      <li class="stage" data-stage="speech"><span class="stage-dot"></span>Speech</li>
+      <li class="stage" data-stage="stt"><span class="stage-dot"></span>Transcribe</li>
+      <li class="stage" data-stage="llm"><span class="stage-dot"></span>Think</li>
+      <li class="stage" data-stage="tts"><span class="stage-dot"></span>Speak</li>
+    </ol>
+
+    <div class="rail-control">
+      <label for="voiceSelect">Voice</label>
+      <select id="voiceSelect"></select>
+    </div>
+
+    <div class="rail-control">
+      <label for="autoplayToggle">
+        <input type="checkbox" id="autoplayToggle" checked>
+        Autoplay replies
+      </label>
+    </div>
+
+    <div class="rail-actions">
+      <button type="button" id="resetBtn" class="ghost-btn">New conversation</button>
+      <button type="button" id="themeToggle" class="ghost-btn">Light mode</button>
+    </div>
+
+    <div class="rail-footer">
+      <span>Gemini-powered &middot; STT + LLM + TTS</span>
+      <span class="student-tag">MEA24CS089</span>
+    </div>
+  </aside>
+
+  <main class="stream">
+    <div class="messages" id="messages">
+      <div class="empty-state" id="emptyState">
+        <h2>Ask something out loud, or type it in.</h2>
+        <p>Every reply is thought through by an LLM and spoken back to you.
+           Try &ldquo;Explain RAG in simple terms&rdquo; or hold the mic and just talk.</p>
+      </div>
+    </div>
+
+    <form class="composer" id="composer">
+      <button type="button" id="micBtn" class="mic-btn" aria-label="Record voice question">
+        <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2">
+          <rect x="9" y="2" width="6" height="12" rx="3"></rect>
+          <path d="M5 10a7 7 0 0 0 14 0"></path>
+          <line x1="12" y1="19" x2="12" y2="22"></line>
+        </svg>
+      </button>
+      <textarea id="textInput" placeholder="Ask anything, or hold the mic to talk…" rows="1"></textarea>
+      <button type="submit" id="sendBtn" class="send-btn">Send</button>
+    </form>
+    <p class="status-line" id="statusLine">&nbsp;</p>
+  </main>
+
+</div>
+<script src="/static/app.js"></script>
+</body>
+</html>
