@@ -492,6 +492,26 @@ async function onRecordingStopped() {
       samples.set(chunk, offset);
       offset += chunk.length;
     }
+    // Check whether the microphone actually captured sound
+let peak = 0;
+
+for (let i = 0; i < samples.length; i++) {
+  peak = Math.max(peak, Math.abs(samples[i]));
+}
+
+console.log(
+  "Aurality recording:",
+  "samples =", samples.length,
+  "sampleRate =", state.sampleRate,
+  "peak =", peak,
+  "duration =", samples.length / state.sampleRate
+);
+
+if (peak < 0.001) {
+  throw new Error(
+    "Microphone recorded silence. Check your microphone permission and input device."
+  );
+}
 
     // Create WAV audio
     const sampleRate =
@@ -823,11 +843,18 @@ function writeString(
 }
 
   function stopLiveWaveform() {
-    if (state.rafId) cancelAnimationFrame(state.rafId);
-    if (state.audioCtx) state.audioCtx.close();
-    state.audioCtx = null;
-    state.analyser = null;
+  if (state.rafId) {
+    cancelAnimationFrame(state.rafId);
+    state.rafId = null;
   }
+
+  if (state.waveformCtx) {
+    state.waveformCtx.close();
+    state.waveformCtx = null;
+  }
+
+  state.analyser = null;
+}
 
   // ---------- Mini waveform for playback ----------
   function computePeaks(audioBuffer, bars) {

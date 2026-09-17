@@ -40,32 +40,72 @@ MAX_HISTORY_TURNS = 8
 
 
 def transcribe_audio(audio_path: Path) -> str:
-    """Turn a recorded audio clip into text using Gemini speech-to-text."""
-
-    import mimetypes
+    import wave
 
     audio_data = audio_path.read_bytes()
 
-    mime_type, _ = mimetypes.guess_type(str(audio_path))
+    if not audio_data:
+        raise ValueError("Audio file is empty.")
 
-    if mime_type is None:
-        mime_type = "audio/webm"
+    try:
+        with wave.open(str(audio_path), "rb") as wav:
+            channels = wav.getnchannels()
+            sample_width = wav.getsampwidth()
+            sample_rate = wav.getframerate()
+            frames = wav.getnframes()
+
+            print(
+                "WAV DEBUG:",
+                "channels =", channels,
+                "sample_width =", sample_width,
+                "sample_rate =", sample_rate,
+                "frames =", frames,
+                "bytes =", len(audio_data),
+            )
+
+    except Exception as e:
+        raise ValueError(f"Invalid WAV file: {e}")
 
     audio_part = types.Part.from_bytes(
         data=audio_data,
-        mime_type=mime_type,
+        mime_type="audio/wav",
     )
 
     response = client.models.generate_content(
         model=TRANSCRIPTION_MODEL,
         contents=[
             audio_part,
-            "Transcribe the speech in this audio exactly. Return only the "
-            "spoken words, with no extra commentary.",
+            "Transcribe exactly what the person says in this audio. "
+            "Return only the spoken words.",
         ],
     )
 
-    return (response.text or "").strip()
+    print("GEMINI RESPONSE PARTS:")
+
+    for part in response.candidates[0].content.parts:
+        print(
+            "PART:",
+            "text =", getattr(part, "text", None),
+            "audio_transcription =", getattr(
+                part, "audio_transcription", None
+            ),
+        )
+
+    for part in response.candidates[0].content.parts:
+        if getattr(part, "audio_transcription", None):
+            transcript = part.audio_transcription.text.strip()
+
+            if transcript:
+                return transcript
+
+    text = (response.text or "").strip()
+
+    if text:
+        return text
+
+    raise ValueError(
+        "Gemini received the audio, but returned no transcription."
+    )
 
 
 def generate_answer(user_text: str, history: list[dict] | None = None) -> str:
